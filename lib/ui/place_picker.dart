@@ -1,9 +1,11 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../core/coord_parser.dart';
+import '../core/link_utils.dart';
 import '../core/models.dart';
 import '../data/places_client.dart';
 import 'theme.dart';
@@ -79,25 +81,38 @@ class _PlacePickerState extends State<PlacePicker> {
   }
 
   Future<void> _usePaste() async {
-    var text = _paste.text.trim();
+    final raw = _paste.text.trim();
     setState(() => _pasteError = null);
-    if (CoordParser.isShortMapsLink(text)) {
+    // Plain coordinates first, then the first URL inside share text.
+    var ll = CoordParser.parse(raw);
+    final url = LinkUtils.extractFirstUrl(raw);
+    if (ll == null && url != null) ll = CoordParser.parse(url);
+    if (ll == null && url != null && CoordParser.isShortMapsLink(url)) {
       setState(() => _busy = true);
-      final resolved = await _places.resolveShortLink(text);
+      final r = await _places.resolveShortLink(url);
       if (!mounted) return;
       setState(() => _busy = false);
-      if (resolved == null) {
-        setState(() => _pasteError = "Couldn't open the short link. Paste the full URL or coordinates.");
+      if (r.location == null) {
+        setState(
+          () => _pasteError = kDebugMode
+              ? "Couldn't resolve the link: ${r.error}"
+              : "Couldn't resolve the link (${r.error}). Paste the full URL or coordinates.",
+        );
         return;
       }
-      text = resolved;
+      ll = r.location;
     }
-    final ll = CoordParser.parse(text);
     if (ll == null) {
       setState(() => _pasteError = 'No coordinates found. Try "28.6139, 77.2090".');
       return;
     }
-    final label = _pasteLabel.text.trim().isEmpty ? ll.key : _pasteLabel.text.trim();
+    // Default label: first non-URL line of shared text, else the coordinates.
+    final firstLine = raw
+        .split('\n')
+        .map((l) => l.replaceAll(RegExp(r'(https?|intent)://\S+'), '').trim())
+        .firstWhere((l) => l.isNotEmpty && CoordParser.parse(l) == null, orElse: () => '');
+    final typed = _pasteLabel.text.trim();
+    final label = typed.isNotEmpty ? typed : (firstLine.isNotEmpty ? firstLine : ll.key);
     if (mounted) Navigator.pop(context, Place(label: label, location: ll));
   }
 

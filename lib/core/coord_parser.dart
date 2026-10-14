@@ -37,8 +37,10 @@ class CoordParser {
     return null;
   }
 
-  static bool isShortMapsLink(String s) =>
-      RegExp(r'^https?://(maps\.app\.goo\.gl|goo\.gl/maps)/', caseSensitive: false).hasMatch(s.trim());
+  static bool isShortMapsLink(String s) => RegExp(
+    r'^https?://(maps\.app\.goo\.gl|goo\.gl/maps|g\.co/kgs)/',
+    caseSensitive: false,
+  ).hasMatch(s.trim());
 
   static LatLng? _valid(String a, String b) {
     final lat = double.tryParse(a), lng = double.tryParse(b);

@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:http/http.dart' as http;
 
+import '../core/link_utils.dart';
 import '../core/models.dart';
 import 'config.dart';
 
@@ -78,21 +81,77 @@ class PlacesClient {
     );
   }
 
-  /// Follows a maps.app.goo.gl short link and returns the final URL.
-  Future<String?> resolveShortLink(String url) async {
+  static const _ua =
+      'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36';
+
+  /// Follows a short link (maps.app.goo.gl / goo.gl/maps) hop by hop and stops
+  /// as soon as a URL carries coordinates. Handles consent.google.com and
+  /// intent:// redirects, and falls back to scraping the final HTML page.
+  Future<ResolveResult> resolveShortLink(String url) async {
+    ResolveResult? last;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      last = await _resolveOnce(url);
+      if (last.location != null) return last;
+      if (!last.retryable) return last;
+    }
+    return last!;
+  }
+
+  Future<ResolveResult> _resolveOnce(String start) async {
+    var uri = Uri.parse(start);
     try {
-      var uri = Uri.parse(url.trim());
-      for (var i = 0; i < 5; i++) {
-        final r = await _http
-            .send(http.Request('GET', uri)..followRedirects = false)
-            .timeout(const Duration(seconds: 8));
-        final loc = r.headers['location'];
-        if (loc == null) return uri.toString();
-        uri = uri.resolve(loc);
+      for (var hop = 0; hop < 8; hop++) {
+        final req = http.Request('GET', uri)
+          ..followRedirects = false
+          ..headers.addAll({
+            'User-Agent': _ua,
+            'Accept-Language': 'en-IN,en;q=0.9',
+            'Accept': 'text/html,*/*',
+          });
+        final res = await _http.send(req).timeout(const Duration(seconds: 15));
+        final loc = res.headers['location'];
+        if (res.isRedirect || (res.statusCode >= 300 && res.statusCode < 400 && loc != null)) {
+          await res.stream.drain<void>();
+          var next = LinkUtils.unwrapConsent(uri.resolve(loc!).toString());
+          next = LinkUtils.fromIntent(loc.toLowerCase().startsWith('intent://') ? loc : next) ?? next;
+          next = LinkUtils.unwrapConsent(next);
+          final ll = LinkUtils.coordsFromUrl(next);
+          if (ll != null) return ResolveResult(location: ll, finalUrl: next);
+          uri = Uri.parse(next);
+          continue;
+        }
+        if (res.statusCode != 200) {
+          await res.stream.drain<void>();
+          return ResolveResult(
+            error: 'HTTP ${res.statusCode} from ${uri.host}',
+            retryable: res.statusCode >= 500,
+          );
+        }
+        final direct = LinkUtils.coordsFromUrl(uri.toString());
+        if (direct != null) {
+          await res.stream.drain<void>();
+          return ResolveResult(location: direct, finalUrl: uri.toString());
+        }
+        // Read up to ~1.5 MB of HTML and scrape coordinates.
+        final bytes = <int>[];
+        await for (final chunk in res.stream.timeout(const Duration(seconds: 15))) {
+          bytes.addAll(chunk);
+          if (bytes.length > 1500000) break;
+        }
+        final ll = LinkUtils.coordsFromHtml(String.fromCharCodes(bytes));
+        return ll != null
+            ? ResolveResult(location: ll, finalUrl: uri.toString())
+            : ResolveResult(error: 'No coordinates on ${uri.host}${uri.path}', finalUrl: uri.toString());
       }
-      return uri.toString();
-    } catch (_) {
-      return null;
+      return ResolveResult(error: 'Too many redirects');
+    } on TimeoutException {
+      return ResolveResult(error: 'Timed out reaching ${uri.host}', retryable: true);
+    } on SocketException catch (e) {
+      return ResolveResult(error: 'Network error: ${e.message}', retryable: true);
+    } on http.ClientException catch (e) {
+      return ResolveResult(error: 'Network error: ${e.message}', retryable: true);
+    } catch (e) {
+      return ResolveResult(error: 'Unexpected: $e');
     }
   }
 
@@ -104,4 +163,12 @@ class PlacesClient {
     final h = b.map((e) => e.toRadixString(16).padLeft(2, '0')).join();
     return '${h.substring(0, 8)}-${h.substring(8, 12)}-${h.substring(12, 16)}-${h.substring(16, 20)}-${h.substring(20)}';
   }
+}
+
+class ResolveResult {
+  final LatLng? location;
+  final String? finalUrl;
+  final String? error;
+  final bool retryable;
+  const ResolveResult({this.location, this.finalUrl, this.error, this.retryable = false});
 }
