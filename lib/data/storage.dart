@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart' show ThemeMode;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/models.dart';
@@ -28,4 +29,8 @@ class Storage {
   }
 
   Future<void> saveModes(Set<TravelMode> m) => _p.setStringList('modes', m.map((e) => e.name).toList());
+
+  ThemeMode loadThemeMode() =>
+      ThemeMode.values.firstWhere((m) => m.name == _p.getString('theme'), orElse: () => ThemeMode.dark);
+  Future<void> saveThemeMode(ThemeMode m) => _p.setString('theme', m.name);
 }

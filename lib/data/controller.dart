@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show ChangeNotifier, ThemeMode;
 import 'package:uuid/uuid.dart';
 
 import '../core/cache.dart';
@@ -15,6 +15,7 @@ class CommuteController extends ChangeNotifier {
   CommuteController(this._storage, this._routes) {
     pairs = _storage.loadPairs();
     modes = _storage.loadModes();
+    themeMode = _storage.loadThemeMode();
     final c = _storage.loadCache();
     if (c != null) cache.decode(c);
   }
@@ -24,6 +25,7 @@ class CommuteController extends ChangeNotifier {
   final cache = ResultCache();
   late List<CommutePair> pairs;
   late Set<TravelMode> modes;
+  late ThemeMode themeMode;
   bool loading = false;
   String? banner; // whole-request problem (offline, key, etc.)
   DateTime? _lastForced;
@@ -136,6 +138,12 @@ class CommuteController extends ChangeNotifier {
     await _storage.saveModes(modes);
     notifyListeners();
     unawaited(refresh());
+  }
+
+  Future<void> setThemeMode(ThemeMode m) async {
+    themeMode = m;
+    notifyListeners();
+    await _storage.saveThemeMode(m);
   }
 
   Future<void> _persist() async {

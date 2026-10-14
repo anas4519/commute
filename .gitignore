@@ -54,3 +54,7 @@ env/*.json
 *.keystore
 key.properties
 local.properties
+.fvm/
+
+shots/
+android/build/

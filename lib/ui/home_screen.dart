@@ -1,14 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../core/maps_link.dart';
 
 import '../core/models.dart';
 import '../data/controller.dart';
 import 'edit_pair_screen.dart';
 import 'format.dart';
+import 'settings_sheet.dart';
+import 'theme.dart';
+import 'widgets.dart';
 
 IconData modeIcon(TravelMode m) => switch (m) {
   TravelMode.walk => Icons.directions_walk_rounded,
-  TravelMode.drive => Icons.directions_car_rounded,
+  TravelMode.drive => Icons.directions_car_filled_rounded,
   TravelMode.twoWheeler => Icons.two_wheeler_rounded,
   TravelMode.bicycle => Icons.pedal_bike_rounded,
 };
@@ -35,242 +41,302 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
-    if (s == AppLifecycleState.resumed) context.read<CommuteController>().refresh(); // TTL-gated
+    if (s == AppLifecycleState.resumed) context.read<CommuteController>().refresh();
   }
+
+  void _add() => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditPairScreen()));
 
   @override
   Widget build(BuildContext context) {
     final c = context.watch<CommuteController>();
-    final t = Theme.of(context);
+    final t = Theme.of(context).textTheme;
+    final p = Palette.of(context);
+    final bottom = MediaQuery.paddingOf(context).bottom;
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Commute'),
-        actions: [
-          IconButton(icon: const Icon(Icons.tune_rounded), onPressed: () => _settings(context)),
-          const SizedBox(width: 8),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EditPairScreen())),
-        child: const Icon(Icons.add_rounded),
-      ),
       body: RefreshIndicator(
+        color: p.accent,
+        backgroundColor: p.surface,
+        edgeOffset: MediaQuery.paddingOf(context).top,
         onRefresh: () => c.refresh(force: true),
-        child: c.pairs.isEmpty
-            ? ListView(
-                children: [
-                  SizedBox(height: MediaQuery.of(context).size.height * 0.3),
-                  Center(
-                    child: Text(
-                      'Add a route to compare walk, car and bike times.',
-                      style: t.textTheme.bodyLarge?.copyWith(color: t.colorScheme.onSurfaceVariant),
-                    ),
-                  ),
-                ],
-              )
-            : ReorderableListView.builder(
-                padding: const EdgeInsets.fromLTRB(20, 4, 20, 100),
-                header: _Header(c: c),
-                itemCount: c.pairs.length,
-                onReorderItem: c.reorder,
-                buildDefaultDragHandles: false,
-                itemBuilder: (_, i) {
-                  final p = c.pairs[i];
-                  return Padding(
-                    key: ValueKey(p.id),
-                    padding: const EdgeInsets.only(bottom: 14),
-                    child: Dismissible(
-                      key: ValueKey('d${p.id}'),
-                      direction: DismissDirection.endToStart,
-                      background: Container(
-                        alignment: Alignment.centerRight,
-                        padding: const EdgeInsets.only(right: 24),
-                        child: Icon(Icons.delete_outline_rounded, color: t.colorScheme.error),
-                      ),
-                      onDismissed: (_) {
-                        c.remove(p.id);
-                        ScaffoldMessenger.of(context)
-                          ..clearSnackBars()
-                          ..showSnackBar(
-                            SnackBar(
-                              content: Text('Removed ${p.title}'),
-                              action: SnackBarAction(label: 'Undo', onPressed: () => c.insertAt(i, p)),
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+          slivers: [
+            SliverSafeArea(
+              bottom: false,
+              sliver: SliverPadding(
+                padding: const EdgeInsets.fromLTRB(Space.xxl, Space.lg, Space.md, Space.xxl),
+                sliver: SliverToBoxAdapter(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: Space.xl),
+                            Text('Commute', style: t.displaySmall),
+                            const SizedBox(height: Space.sm),
+                            Row(
+                              children: [
+                                Text(
+                                  fmtAgo(c.lastUpdated, DateTime.now()),
+                                  style: t.bodySmall?.copyWith(color: p.textMuted),
+                                ),
+                                if (c.loading) ...[
+                                  const SizedBox(width: Space.sm),
+                                  SizedBox(
+                                    width: 10,
+                                    height: 10,
+                                    child: CircularProgressIndicator(strokeWidth: 1.4, color: p.textMuted),
+                                  ),
+                                ],
+                              ],
                             ),
-                          );
-                      },
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Settings',
+                        icon: const Icon(Icons.tune_rounded),
+                        onPressed: () => showSettings(context),
+                      ),
+                      IconButton(tooltip: 'Add route', icon: const Icon(Icons.add_rounded), onPressed: _add),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            if (c.banner != null)
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(Space.xl, 0, Space.xl, Space.lg),
+                sliver: SliverToBoxAdapter(child: _Banner(text: c.banner!)),
+              ),
+            if (c.pairs.isEmpty)
+              SliverFillRemaining(hasScrollBody: false, child: _Empty(onAdd: _add))
+            else
+              SliverPadding(
+                padding: EdgeInsets.fromLTRB(Space.xl, 0, Space.xl, Space.xxxl + bottom),
+                sliver: SliverReorderableList(
+                  itemCount: c.pairs.length,
+                  onReorderItem: c.reorder,
+                  proxyDecorator: (child, _, _) => Material(color: Colors.transparent, child: child),
+                  itemBuilder: (context, i) {
+                    final pair = c.pairs[i];
+                    return Padding(
+                      key: ValueKey(pair.id),
+                      padding: const EdgeInsets.only(bottom: Space.lg),
                       child: ReorderableDelayedDragStartListener(
                         index: i,
-                        child: _PairCard(pair: p),
+                        child: Dismissible(
+                          key: ValueKey('d${pair.id}'),
+                          direction: DismissDirection.endToStart,
+                          background: Container(
+                            alignment: Alignment.centerRight,
+                            padding: const EdgeInsets.only(right: Space.xxl),
+                            child: Icon(Icons.delete_outline_rounded, color: p.danger),
+                          ),
+                          onDismissed: (_) {
+                            c.remove(pair.id);
+                            ScaffoldMessenger.of(context)
+                              ..clearSnackBars()
+                              ..showSnackBar(
+                                SnackBar(
+                                  content: Text('Route removed'),
+                                  action: SnackBarAction(label: 'Undo', onPressed: () => c.insertAt(i, pair)),
+                                ),
+                              );
+                          },
+                          child: _RouteCard(pair: pair),
+                        ),
                       ),
-                    ),
-                  );
-                },
+                    );
+                  },
+                ),
               ),
-      ),
-    );
-  }
-
-  void _settings(BuildContext context) {
-    showModalBottomSheet<void>(
-      context: context,
-      showDragHandle: true,
-      builder: (_) => Consumer<CommuteController>(
-        builder: (_, c, _) => SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(8, 0, 8, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final m in TravelMode.values)
-                  SwitchListTile(
-                    secondary: Icon(modeIcon(m)),
-                    title: Text(m == TravelMode.twoWheeler ? 'Bike (two-wheeler)' : m.label),
-                    subtitle: m == TravelMode.bicycle ? const Text('Limited coverage in India') : null,
-                    value: c.modes.contains(m),
-                    onChanged: (v) => c.toggleMode(m, v),
-                  ),
-              ],
-            ),
-          ),
+          ],
         ),
       ),
     );
   }
 }
 
-class _Header extends StatelessWidget {
-  const _Header({required this.c});
-  final CommuteController c;
-
+class _Banner extends StatelessWidget {
+  const _Banner({required this.text});
+  final String text;
   @override
   Widget build(BuildContext context) {
-    final t = Theme.of(context);
-    // Overall fastest across all pairs.
-    String? headline;
-    int? bestSec;
-    for (final p in c.pairs) {
-      final m = c.bestFor(p);
-      final r = m == null ? null : c.cache.get(p.id, m);
-      if (r != null && (bestSec == null || r.durationSec! < bestSec)) {
-        bestSec = r.durationSec;
-        headline = '${p.destination.label} by ${m!.label.toLowerCase()}';
-      }
-    }
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 20, top: 4),
-      child: Column(
+    final p = Palette.of(context);
+    return Container(
+      padding: const EdgeInsets.all(Space.lg),
+      decoration: BoxDecoration(
+        color: p.danger.withValues(alpha: 0.08),
+        border: Border.all(color: p.danger.withValues(alpha: 0.25)),
+        borderRadius: BorderRadius.circular(Space.radiusSm),
+      ),
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          if (headline != null) ...[
-            Text(
-              'Fastest right now',
-              style: t.textTheme.labelMedium?.copyWith(color: t.colorScheme.onSurfaceVariant),
-            ),
-            const SizedBox(height: 4),
-            Text.rich(
-              TextSpan(
-                children: [
-                  TextSpan(
-                    text: '${fmtDuration(bestSec!)} min',
-                    style: TextStyle(color: t.colorScheme.primary),
-                  ),
-                  TextSpan(text: '  ·  $headline'),
-                ],
-              ),
-              style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 8),
-          ],
-          Row(
-            children: [
-              Text(
-                fmtAgo(c.lastUpdated, DateTime.now()),
-                style: t.textTheme.bodySmall?.copyWith(color: t.colorScheme.onSurfaceVariant),
-              ),
-              if (c.loading) ...[
-                const SizedBox(width: 8),
-                const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 1.5)),
-              ],
-            ],
+          Icon(Icons.error_outline_rounded, size: 18, color: p.danger),
+          const SizedBox(width: Space.md),
+          Expanded(
+            child: Text(text, style: Theme.of(context).textTheme.bodySmall?.copyWith(color: p.text)),
           ),
-          if (c.banner != null) ...[
-            const SizedBox(height: 12),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: t.colorScheme.errorContainer.withValues(alpha: 0.5),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                c.banner!,
-                style: t.textTheme.bodySmall?.copyWith(color: t.colorScheme.onErrorContainer),
-              ),
-            ),
-          ],
         ],
       ),
     );
   }
 }
 
-class _PairCard extends StatelessWidget {
-  const _PairCard({required this.pair});
+class _Empty extends StatelessWidget {
+  const _Empty({required this.onAdd});
+  final VoidCallback onAdd;
+  @override
+  Widget build(BuildContext context) {
+    final t = Theme.of(context).textTheme;
+    final p = Palette.of(context);
+    return Padding(
+      padding: EdgeInsets.fromLTRB(Space.xxl, 0, Space.xxl, Space.xxxl * 3),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              color: p.surface,
+              shape: BoxShape.circle,
+              border: Border.all(color: p.border),
+            ),
+            child: Icon(Icons.route_rounded, color: p.accent, size: 28),
+          ),
+          const SizedBox(height: Space.xxl),
+          Text('No routes yet', style: t.titleLarge),
+          const SizedBox(height: Space.sm),
+          Text(
+            'Add the trips you take, like home to each metro station, and see which way is fastest right now.',
+            textAlign: TextAlign.center,
+            style: t.bodyMedium?.copyWith(color: p.textMuted),
+          ),
+          const SizedBox(height: Space.xxl),
+          SizedBox(
+            width: 200,
+            child: FilledButton.icon(
+              onPressed: onAdd,
+              icon: const Icon(Icons.add_rounded),
+              label: const Text('Add route'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RouteCard extends StatelessWidget {
+  const _RouteCard({required this.pair});
   final CommutePair pair;
 
   @override
   Widget build(BuildContext context) {
     final c = context.watch<CommuteController>();
-    final t = Theme.of(context);
+    final t = Theme.of(context).textTheme;
+    final p = Palette.of(context);
     final best = c.bestFor(pair);
     final now = DateTime.now();
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => EditPairScreen(pair: pair))),
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Column(
+    return Surface(
+      onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => EditPairScreen(pair: pair))),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                pair.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: t.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -0.2),
-              ),
-              if (pair.name.trim().isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text(
-                    '${pair.origin.label} → ${pair.destination.label}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: t.textTheme.bodySmall?.copyWith(color: t.colorScheme.onSurfaceVariant),
-                  ),
-                ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  for (final (i, m) in c.orderedModes.indexed) ...[
-                    if (i > 0) const SizedBox(width: 8),
-                    Expanded(
-                      child: _ModeTile(
-                        mode: m,
-                        result: c.cache.get(pair.id, m),
-                        best: m == best,
-                        stale: !c.cache.isFresh(pair, m, now),
-                        routeKey: pair.routeKey,
-                      ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (pair.name.trim().isNotEmpty) ...[
+                      Text(pair.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.titleMedium),
+                      const SizedBox(height: Space.xs),
+                    ],
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            pair.origin.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: pair.name.trim().isEmpty
+                                ? t.titleMedium
+                                : t.bodyMedium?.copyWith(color: p.textMuted),
+                          ),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: Space.sm),
+                          child: Icon(Icons.arrow_forward_rounded, size: 16, color: p.textMuted),
+                        ),
+                        Flexible(
+                          child: Text(
+                            pair.destination.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: pair.name.trim().isEmpty
+                                ? t.titleMedium
+                                : t.bodyMedium?.copyWith(color: p.textMuted),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
-                ],
+                ),
+              ),
+              const SizedBox(width: Space.sm),
+              Transform.translate(
+                offset: const Offset(Space.sm, -Space.sm),
+                child: IconButton(
+                  tooltip: 'Open in Maps',
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(Icons.near_me_outlined, size: 20, color: p.textMuted),
+                  onPressed: () => _openMaps(context, best),
+                ),
               ),
             ],
           ),
-        ),
+          const SizedBox(height: Space.lg),
+          Row(
+            children: [
+              for (final (i, m) in c.orderedModes.indexed) ...[
+                if (i > 0) const SizedBox(width: Space.sm),
+                Expanded(
+                  child: _ModeTile(
+                    onTap: () => _openMaps(context, m),
+                    mode: m,
+                    result: c.cache.get(pair.id, m),
+                    best: m == best,
+                    stale: !c.cache.isFresh(pair, m, now),
+                    loading: c.loading,
+                    routeKey: pair.routeKey,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
       ),
     );
+  }
+
+  Future<void> _openMaps(BuildContext context, TravelMode? mode) async {
+    final uri = mapsDirectionsUri(pair.origin.location, pair.destination.location, mode: mode);
+    final messenger = ScaffoldMessenger.of(context);
+    bool ok;
+    try {
+      ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {
+      ok = false;
+    }
+    if (!ok) messenger.showSnackBar(const SnackBar(content: Text("Couldn't open Google Maps")));
   }
 }
 
@@ -280,64 +346,94 @@ class _ModeTile extends StatelessWidget {
     required this.result,
     required this.best,
     required this.stale,
+    required this.loading,
     required this.routeKey,
+    required this.onTap,
   });
+  final VoidCallback onTap;
   final TravelMode mode;
   final LegResult? result;
-  final bool best;
-  final bool stale;
+  final bool best, stale, loading;
   final String routeKey;
 
   @override
   Widget build(BuildContext context) {
-    final t = Theme.of(context);
-    final s = t.colorScheme;
+    final t = Theme.of(context).textTheme;
+    final p = Palette.of(context);
     final r = (result != null && result!.routeKey == routeKey) ? result : null;
-    final fg = best ? s.onPrimary : s.onSurface;
-    final sub = best ? s.onPrimary.withValues(alpha: 0.8) : s.onSurfaceVariant;
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 250),
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-      decoration: BoxDecoration(
-        color: best ? s.primary : s.surfaceContainerHighest.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Opacity(
-        opacity: stale && !best ? 0.6 : 1,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    final fg = best ? p.onAccent : p.text;
+    final muted = best ? p.onAccent.withValues(alpha: 0.7) : p.textMuted;
+
+    Widget value;
+    if (r == null && loading) {
+      value = const Padding(
+        padding: EdgeInsets.symmetric(vertical: 5),
+        child: Shimmer(width: 44, height: 22),
+      );
+    } else if (r == null || !r.ok) {
+      value = Text(
+        'n/a',
+        style: t.titleLarge?.copyWith(color: muted, fontWeight: FontWeight.w500),
+      );
+    } else {
+      value = Text.rich(
+        TextSpan(
           children: [
-            Icon(modeIcon(mode), size: 18, color: sub),
-            const SizedBox(height: 8),
-            if (r == null)
-              Text('—', style: t.textTheme.titleLarge?.copyWith(color: sub))
-            else if (!r.ok)
-              Text('n/a', style: t.textTheme.titleMedium?.copyWith(color: sub))
-            else
-              Text.rich(
-                TextSpan(
-                  children: [
-                    TextSpan(text: fmtDuration(r.durationSec!)),
-                    TextSpan(
-                      text: ' min',
-                      style: t.textTheme.bodySmall?.copyWith(color: sub),
-                    ),
-                  ],
-                ),
-                style: t.textTheme.titleLarge?.copyWith(
-                  color: fg,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: -0.5,
-                ),
-              ),
-            const SizedBox(height: 2),
-            Text(
-              r == null ? mode.label : (r.ok ? fmtDistance(r.distanceMeters) : (r.error ?? '')),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: t.textTheme.labelSmall?.copyWith(color: sub),
+            TextSpan(text: fmtDuration(r.durationSec!)),
+            TextSpan(
+              text: ' min',
+              style: t.labelMedium?.copyWith(color: muted),
             ),
           ],
+        ),
+        maxLines: 1,
+        style: t.headlineSmall?.copyWith(
+          color: fg,
+          fontWeight: FontWeight.w700,
+          letterSpacing: -0.8,
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
+      );
+    }
+
+    final sub = r == null ? '' : (r.ok ? fmtDistance(r.distanceMeters) : (r.error ?? ''));
+
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.fromLTRB(Space.md, Space.md, Space.sm, Space.md),
+        decoration: BoxDecoration(
+          color: best ? p.accent : p.surfaceHi,
+          borderRadius: BorderRadius.circular(Space.radiusSm),
+        ),
+        child: Opacity(
+          opacity: stale && !best && r != null && r.ok ? 0.55 : 1,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(modeIcon(mode), size: 16, color: muted),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(mode.label, maxLines: 1, style: t.labelSmall?.copyWith(color: muted)),
+                  ),
+                ],
+              ),
+              const SizedBox(height: Space.md),
+              FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.centerLeft, child: value),
+              const SizedBox(height: Space.xs),
+              Text(
+                sub,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: t.labelSmall?.copyWith(color: muted),
+              ),
+            ],
+          ),
         ),
       ),
     );

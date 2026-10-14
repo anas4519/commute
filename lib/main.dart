@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'data/controller.dart';
@@ -10,6 +11,7 @@ import 'ui/theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   final storage = await Storage.open();
   runApp(
     MultiProvider(
@@ -30,7 +32,7 @@ class CommuteApp extends StatelessWidget {
     debugShowCheckedModeBanner: false,
     theme: buildTheme(Brightness.light),
     darkTheme: buildTheme(Brightness.dark),
-    themeMode: ThemeMode.system,
+    themeMode: context.select<CommuteController, ThemeMode>((c) => c.themeMode),
     home: const HomeScreen(),
   );
 }

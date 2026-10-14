@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../core/coord_parser.dart';
 import '../core/models.dart';
 import '../data/places_client.dart';
+import 'theme.dart';
 
 /// Search (Places Autocomplete) or paste coordinates / a Maps link.
 class PlacePicker extends StatefulWidget {
@@ -100,94 +101,120 @@ class _PlacePickerState extends State<PlacePicker> {
     if (mounted) Navigator.pop(context, Place(label: label, location: ll));
   }
 
+  int _tab = 0;
+
   @override
   Widget build(BuildContext context) {
-    final t = Theme.of(context);
-    return DefaultTabController(
-      length: 2,
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(widget.title),
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: 'Search'),
-              Tab(text: 'Paste'),
-            ],
-            dividerColor: Colors.transparent,
+    final t = Theme.of(context).textTheme;
+    final p = Palette.of(context);
+    final search = <Widget>[
+      TextField(
+        controller: _query,
+        autofocus: true,
+        onChanged: _onQuery,
+        textInputAction: TextInputAction.search,
+        style: t.bodyLarge,
+        decoration: const InputDecoration(
+          hintText: 'Search a place or station',
+          prefixIcon: Icon(Icons.search_rounded, size: 20),
+        ),
+      ),
+      if (_error != null)
+        Padding(
+          padding: const EdgeInsets.only(top: Space.md),
+          child: Text(_error!, style: t.bodySmall?.copyWith(color: p.danger)),
+        ),
+      const SizedBox(height: Space.lg),
+      if (_results.isEmpty && _query.text.trim().length < 3)
+        Padding(
+          padding: const EdgeInsets.only(top: Space.xxl),
+          child: Text(
+            'Type at least 3 letters',
+            textAlign: TextAlign.center,
+            style: t.bodySmall?.copyWith(color: p.textMuted),
           ),
         ),
-        body: Stack(
-          children: [
-            TabBarView(
-              children: [
-                ListView(
-                  padding: const EdgeInsets.all(20),
-                  children: [
-                    TextField(
-                      controller: _query,
-                      autofocus: true,
-                      onChanged: _onQuery,
-                      decoration: const InputDecoration(
-                        hintText: 'Search a place or station',
-                        prefixIcon: Icon(Icons.search_rounded),
-                      ),
-                    ),
-                    if (_error != null)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: Text(_error!, style: TextStyle(color: t.colorScheme.error)),
-                      ),
-                    const SizedBox(height: 8),
-                    for (final s in _results)
-                      ListTile(
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-                        leading: Icon(Icons.place_outlined, color: t.colorScheme.onSurfaceVariant),
-                        title: Text(s.main),
-                        subtitle: Text(s.secondary, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        onTap: () => _select(s),
-                      ),
-                    if (_results.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.only(top: 12),
-                        child: Text(
-                          'Powered by Google',
-                          textAlign: TextAlign.end,
-                          style: t.textTheme.labelSmall?.copyWith(color: t.colorScheme.onSurfaceVariant),
-                        ),
-                      ),
-                  ],
-                ),
-                ListView(
-                  padding: const EdgeInsets.all(20),
-                  children: [
-                    TextField(
-                      controller: _paste,
-                      minLines: 1,
-                      maxLines: 4,
-                      decoration: InputDecoration(
-                        hintText: '28.6139, 77.2090  or a Google Maps link',
-                        errorText: _pasteError,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: _pasteLabel,
-                      decoration: const InputDecoration(hintText: 'Label (e.g. Home)'),
-                    ),
-                    const SizedBox(height: 24),
-                    FilledButton(
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size.fromHeight(52),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                      ),
-                      onPressed: _usePaste,
-                      child: const Text('Use location'),
-                    ),
-                  ],
+      if (_results.isNotEmpty)
+        Container(
+          decoration: BoxDecoration(
+            color: p.surface,
+            border: Border.all(color: p.border),
+            borderRadius: BorderRadius.circular(Space.radius),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              for (final (i, s) in _results.indexed) ...[
+                if (i > 0) Divider(height: 1, color: p.border, indent: 56),
+                ListTile(
+                  leading: Icon(Icons.place_outlined, size: 20, color: p.textMuted),
+                  title: Text(s.main, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(s.secondary, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  onTap: () => _select(s),
                 ),
               ],
+            ],
+          ),
+        ),
+      if (_results.isNotEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: Space.md, right: Space.xs),
+          child: Text(
+            'Powered by Google',
+            textAlign: TextAlign.end,
+            style: t.labelSmall?.copyWith(color: p.textMuted),
+          ),
+        ),
+    ];
+    final paste = <Widget>[
+      TextField(
+        controller: _paste,
+        minLines: 2,
+        maxLines: 4,
+        style: t.bodyLarge,
+        decoration: InputDecoration(
+          hintText: '28.6139, 77.2090\nor a Google Maps link',
+          errorText: _pasteError,
+        ),
+      ),
+      const SizedBox(height: Space.md),
+      TextField(
+        controller: _pasteLabel,
+        textCapitalization: TextCapitalization.words,
+        style: t.bodyLarge,
+        decoration: const InputDecoration(hintText: 'Label, e.g. Home'),
+      ),
+      const SizedBox(height: Space.xxl),
+      FilledButton(onPressed: _busy ? null : _usePaste, child: const Text('Use location')),
+    ];
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.title)),
+      body: SafeArea(
+        child: Column(
+          children: [
+            if (_busy) const LinearProgressIndicator(minHeight: 2) else const SizedBox(height: 2),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(Space.xl, Space.md, Space.xl, Space.xl),
+              child: SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<int>(
+                  showSelectedIcon: false,
+                  segments: const [
+                    ButtonSegment(value: 0, label: Text('Search')),
+                    ButtonSegment(value: 1, label: Text('Paste')),
+                  ],
+                  selected: {_tab},
+                  onSelectionChanged: (s) => setState(() => _tab = s.first),
+                ),
+              ),
             ),
-            if (_busy) const LinearProgressIndicator(minHeight: 2),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(Space.xl, 0, Space.xl, Space.xl),
+                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                children: _tab == 0 ? search : paste,
+              ),
+            ),
           ],
         ),
       ),
