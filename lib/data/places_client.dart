@@ -10,6 +10,7 @@ import '../core/link_utils.dart';
 import '../core/log.dart';
 import '../core/models.dart';
 import 'config.dart';
+import 'doh.dart';
 import 'http_factory.dart';
 
 class Suggestion {
@@ -25,18 +26,34 @@ class PlacesClient {
   PlacesClient({
     http.Client? client,
     http.Client Function()? resolverClient,
-    List<(String, http.Client? Function())>? resolverPaths,
+    List<(String, FutureOr<http.Client?> Function(String host))>? resolverPaths,
     this.hopTimeout = const Duration(seconds: 10),
     this.bodyTimeout = const Duration(seconds: 8),
     this.deadline = const Duration(seconds: 10),
   }) : _http = client ?? http.Client(),
        _paths =
-           resolverPaths ??
-           (resolverClient != null
-               ? [('test', () => resolverClient())]
-               : [('cronet', HttpFactory.native), ('dart:io', () => HttpFactory.io())]);
+           resolverPaths ?? (resolverClient != null ? [('test', (_) => resolverClient())] : defaultPaths);
   final http.Client _http;
-  final List<(String, http.Client? Function())> _paths;
+  final List<(String, FutureOr<http.Client?> Function(String host))> _paths;
+
+  static bool _isGoogleShortHost(String h) => h == 'maps.app.goo.gl' || h == 'goo.gl' || h == 'g.co';
+
+  /// Order: DoH-pinned (bypasses ISP DNS poisoning) → Cronet → dart:io.
+  /// (WebView is the UI-level last resort.)
+  static final defaultPaths = <(String, FutureOr<http.Client?> Function(String host))>[
+    (
+      'doh',
+      (host) async {
+        if (!_isGoogleShortHost(host)) return null;
+        final ips = await Doh.lookup(host);
+        if (ips.isEmpty) return null;
+        AppLog.d('link', 'doh pin $host → ${ips.first}');
+        return Doh.pinned(host, ips.first);
+      },
+    ),
+    ('cronet', (_) => HttpFactory.native()),
+    ('dart:io', (_) => HttpFactory.io()),
+  ];
   final Duration hopTimeout, bodyTimeout, deadline;
   String? _session;
 
@@ -131,7 +148,12 @@ class PlacesClient {
     if (host != null && host.isNotEmpty) HttpFactory.logDns(host);
     ResolveResult last = const ResolveResult(error: 'No HTTP stack available');
     for (final (name, make) in _paths) {
-      final client = make();
+      http.Client? client;
+      try {
+        client = await Future.value(make(host ?? '')).timeout(const Duration(seconds: 8));
+      } catch (e) {
+        AppLog.d('link', 'path $name setup failed ${e.runtimeType}: $e');
+      }
       if (client == null) {
         AppLog.d('link', 'path $name unavailable');
         continue;

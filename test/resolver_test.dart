@@ -103,9 +103,9 @@ void main() {
     );
     final r = await PlacesClient(
       resolverPaths: [
-        ('native', () => null), // unavailable
-        ('bad', () => bad),
-        ('good', () => good),
+        ('native', (_) => null), // unavailable
+        ('bad', (_) => bad),
+        ('good', (_) => good),
       ],
       hopTimeout: const Duration(milliseconds: 300),
     ).resolveShortLink('https://maps.app.goo.gl/x');
