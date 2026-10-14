@@ -3,12 +3,14 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 import '../core/coord_parser.dart';
 import '../core/link_utils.dart';
 import '../core/log.dart';
 import '../core/models.dart';
 import '../data/places_client.dart';
+import 'web_link_resolver.dart';
 import 'theme.dart';
 
 /// Search (Places Autocomplete) or paste coordinates / a Maps link.
@@ -81,6 +83,31 @@ class _PlacePickerState extends State<PlacePicker> {
     }
   }
 
+  WebLinkResolver? _web;
+  String? _lastError;
+
+  /// HTTP (Cronet → dart:io), then an invisible WebView as a last resort.
+  Future<LatLng?> _resolveAnyway(String url) async {
+    final r = await _places.resolveShortLink(url);
+    if (r.location != null) {
+      AppLog.d('ui', 'short link resolved via ${r.path}');
+      return r.location;
+    }
+    _lastError = r.error;
+    if (!mounted) return null;
+    final web = WebLinkResolver();
+    setState(() => _web = web);
+    await WidgetsBinding.instance.endOfFrame; // make sure the WebView is mounted
+    try {
+      final ll = await web.resolve(url);
+      if (ll != null) AppLog.d('ui', 'short link resolved via webview');
+      if (ll == null) _lastError = '${r.error}; webview failed too';
+      return ll;
+    } finally {
+      if (mounted) setState(() => _web = null);
+    }
+  }
+
   Future<void> _usePaste() async {
     final raw = _paste.text.trim();
     setState(() => _pasteError = null);
@@ -90,28 +117,29 @@ class _PlacePickerState extends State<PlacePicker> {
     if (ll == null && url != null) ll = CoordParser.parse(url);
     if (ll == null && url != null && CoordParser.isShortMapsLink(url)) {
       setState(() => _busy = true);
-      ResolveResult r;
       try {
-        // Outer guard on top of the client's own deadline.
-        r = await _places
-            .resolveShortLink(url)
-            .timeout(const Duration(seconds: 30), onTimeout: () => const ResolveResult(error: 'Timed out'));
+        ll = await _resolveAnyway(url).timeout(
+          const Duration(seconds: 60),
+          onTimeout: () {
+            AppLog.d('ui', 'paste flow hard deadline hit');
+            return null;
+          },
+        );
       } catch (e) {
         AppLog.d('ui', 'resolve threw ${e.runtimeType}: $e');
-        r = ResolveResult(error: '$e');
+        ll = null;
       } finally {
         if (mounted) setState(() => _busy = false);
       }
       if (!mounted) return;
-      if (r.location == null) {
+      if (ll == null) {
         setState(
           () => _pasteError = kDebugMode
-              ? "Couldn't resolve the link: ${r.error}"
-              : "Couldn't resolve the link (${r.error}). Paste the full URL or coordinates.",
+              ? "Couldn't resolve the link: $_lastError"
+              : "Couldn't resolve the link ($_lastError). Paste the full URL or coordinates.",
         );
         return;
       }
-      ll = r.location;
     }
     if (ll == null) {
       setState(() => _pasteError = 'No coordinates found. Try "28.6139, 77.2090".');
@@ -219,6 +247,14 @@ class _PlacePickerState extends State<PlacePicker> {
         child: Column(
           children: [
             if (_busy) const LinearProgressIndicator(minHeight: 2) else const SizedBox(height: 2),
+            if (_web != null)
+              SizedBox(
+                width: 1,
+                height: 1,
+                child: IgnorePointer(
+                  child: Opacity(opacity: 0.01, child: WebViewWidget(controller: _web!.controller)),
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.fromLTRB(Space.xl, Space.md, Space.xl, Space.xl),
               child: SizedBox(

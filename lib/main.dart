@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import 'data/controller.dart';
+import 'data/http_factory.dart';
 import 'data/places_client.dart';
 import 'data/routes_client.dart';
 import 'data/storage.dart';
@@ -27,8 +28,10 @@ Future<void> main() async {
   runApp(
     MultiProvider(
       providers: [
-        Provider(create: (_) => PlacesClient()),
-        ChangeNotifierProvider(create: (_) => CommuteController(storage, RoutesClient())),
+        Provider(create: (_) => PlacesClient(client: HttpFactory.preferred())),
+        ChangeNotifierProvider(
+          create: (_) => CommuteController(storage, RoutesClient(client: HttpFactory.preferred())),
+        ),
       ],
       child: const CommuteApp(),
     ),

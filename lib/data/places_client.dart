@@ -10,6 +10,7 @@ import '../core/link_utils.dart';
 import '../core/log.dart';
 import '../core/models.dart';
 import 'config.dart';
+import 'http_factory.dart';
 
 class Suggestion {
   final String placeId;
@@ -24,13 +25,18 @@ class PlacesClient {
   PlacesClient({
     http.Client? client,
     http.Client Function()? resolverClient,
+    List<(String, http.Client? Function())>? resolverPaths,
     this.hopTimeout = const Duration(seconds: 10),
     this.bodyTimeout = const Duration(seconds: 8),
-    this.deadline = const Duration(seconds: 25),
+    this.deadline = const Duration(seconds: 10),
   }) : _http = client ?? http.Client(),
-       _newResolverClient = resolverClient ?? http.Client.new;
+       _paths =
+           resolverPaths ??
+           (resolverClient != null
+               ? [('test', () => resolverClient())]
+               : [('cronet', HttpFactory.native), ('dart:io', () => HttpFactory.io())]);
   final http.Client _http;
-  final http.Client Function() _newResolverClient;
+  final List<(String, http.Client? Function())> _paths;
   final Duration hopTimeout, bodyTimeout, deadline;
   String? _session;
 
@@ -120,21 +126,35 @@ class PlacesClient {
   /// read, and the whole flow (incl. one retry) have hard timeouts, and the
   /// per-resolve HTTP client is closed at the end to abort open sockets.
   Future<ResolveResult> resolveShortLink(String url) async {
-    final sw = Stopwatch()..start();
     AppLog.d('link', 'resolve start ${AppLog.trunc(url)}');
-    final client = _newResolverClient();
-    try {
-      return await _resolveWithRetry(client, url).timeout(
-        deadline,
-        onTimeout: () {
-          AppLog.d('link', 'overall deadline ${deadline.inSeconds}s hit');
-          return const ResolveResult(error: 'Timed out');
-        },
+    final host = Uri.tryParse(url)?.host;
+    if (host != null && host.isNotEmpty) HttpFactory.logDns(host);
+    ResolveResult last = const ResolveResult(error: 'No HTTP stack available');
+    for (final (name, make) in _paths) {
+      final client = make();
+      if (client == null) {
+        AppLog.d('link', 'path $name unavailable');
+        continue;
+      }
+      final sw = Stopwatch()..start();
+      try {
+        last = await _resolveWithRetry(client, url).timeout(
+          deadline,
+          onTimeout: () {
+            AppLog.d('link', 'path $name deadline ${deadline.inSeconds}s hit');
+            return const ResolveResult(error: 'Timed out');
+          },
+        );
+      } finally {
+        client.close(); // aborts any in-flight request/body
+      }
+      AppLog.d(
+        'link',
+        'path $name ${last.location != null ? 'OK' : 'failed (${last.error})'} in ${sw.elapsedMilliseconds}ms',
       );
-    } finally {
-      client.close(); // aborts any in-flight request/body
-      AppLog.d('link', 'resolve end after ${sw.elapsedMilliseconds}ms');
+      if (last.location != null) return last.withPath(name);
     }
+    return last;
   }
 
   Future<ResolveResult> _resolveWithRetry(http.Client client, String url) async {
@@ -213,6 +233,9 @@ class PlacesClient {
     } on TimeoutException {
       AppLog.d('link', 'TimeoutException on ${uri.host}');
       return ResolveResult(error: 'Timed out reaching ${uri.host}', retryable: true);
+    } on HandshakeException catch (e) {
+      AppLog.d('link', 'TLS HandshakeException: ${e.message} ${e.osError?.message ?? ''}');
+      return ResolveResult(error: 'TLS error: ${e.message}', retryable: true);
     } on SocketException catch (e) {
       AppLog.d('link', 'SocketException: ${e.message} ${e.osError?.message ?? ''}');
       return ResolveResult(error: 'Network error: ${e.message}', retryable: true);
@@ -273,5 +296,8 @@ class ResolveResult {
   final String? finalUrl;
   final String? error;
   final bool retryable;
-  const ResolveResult({this.location, this.finalUrl, this.error, this.retryable = false});
+  final String? path;
+  const ResolveResult({this.location, this.finalUrl, this.error, this.retryable = false, this.path});
+  ResolveResult withPath(String p) =>
+      ResolveResult(location: location, finalUrl: finalUrl, error: error, retryable: retryable, path: p);
 }

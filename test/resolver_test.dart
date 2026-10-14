@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:commute/data/places_client.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -87,6 +88,30 @@ void main() {
     expect(sw.elapsed, lessThan(const Duration(seconds: 2)));
     expect(hang.closed, isTrue);
     expect(f.closed, isFalse);
+  });
+
+  test('falls back to next HTTP path after TLS failure, reports path', () async {
+    final bad = FakeClient(
+      (r) => throw const HandshakeException('CERTIFICATE_VERIFY_FAILED: Hostname mismatch'),
+    );
+    final good = FakeClient(
+      (r) => http.StreamedResponse(
+        const Stream.empty(),
+        302,
+        headers: {'location': 'https://www.google.com/maps/@28.5,77.1,15z'},
+      ),
+    );
+    final r = await PlacesClient(
+      resolverPaths: [
+        ('native', () => null), // unavailable
+        ('bad', () => bad),
+        ('good', () => good),
+      ],
+      hopTimeout: const Duration(milliseconds: 300),
+    ).resolveShortLink('https://maps.app.goo.gl/x');
+    expect(r.location?.lat, 28.5);
+    expect(r.path, 'good');
+    expect(bad.closed, isTrue);
   });
 
   test('redirect loop detected', () async {
