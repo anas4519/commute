@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../core/coord_parser.dart';
 import '../core/link_utils.dart';
+import '../core/log.dart';
 import '../core/models.dart';
 import '../data/places_client.dart';
 import 'theme.dart';
@@ -89,9 +90,19 @@ class _PlacePickerState extends State<PlacePicker> {
     if (ll == null && url != null) ll = CoordParser.parse(url);
     if (ll == null && url != null && CoordParser.isShortMapsLink(url)) {
       setState(() => _busy = true);
-      final r = await _places.resolveShortLink(url);
+      ResolveResult r;
+      try {
+        // Outer guard on top of the client's own deadline.
+        r = await _places
+            .resolveShortLink(url)
+            .timeout(const Duration(seconds: 30), onTimeout: () => const ResolveResult(error: 'Timed out'));
+      } catch (e) {
+        AppLog.d('ui', 'resolve threw ${e.runtimeType}: $e');
+        r = ResolveResult(error: '$e');
+      } finally {
+        if (mounted) setState(() => _busy = false);
+      }
       if (!mounted) return;
-      setState(() => _busy = false);
       if (r.location == null) {
         setState(
           () => _pasteError = kDebugMode

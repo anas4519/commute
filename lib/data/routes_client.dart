@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 
 import '../core/matrix_planner.dart';
 import '../core/models.dart';
+import '../core/log.dart';
 import 'config.dart';
 
 class RoutesClient {
@@ -24,9 +25,22 @@ class RoutesClient {
   Future<List<dynamic>> matrix(MatrixRequest r, TravelMode mode) => _send(r, mode, retry: true);
 
   Future<List<dynamic>> _send(MatrixRequest r, TravelMode mode, {required bool retry}) async {
-    final res = await _http
-        .post(_url, headers: AppConfig.headers(_mask), body: jsonEncode(body(r, mode)))
-        .timeout(const Duration(seconds: 10));
+    final sw = Stopwatch()..start();
+    final label = '${mode.api} ${r.origins.length}x${r.destinations.length}';
+    final http.Response res;
+    try {
+      res = await _http
+          .post(_url, headers: AppConfig.headers(_mask), body: jsonEncode(body(r, mode)))
+          .timeout(const Duration(seconds: 10));
+    } catch (e) {
+      AppLog.d('routes', '$label failed after ${sw.elapsedMilliseconds}ms ${e.runtimeType}: $e');
+      rethrow;
+    }
+    AppLog.d(
+      'routes',
+      '$label → ${res.statusCode} in ${sw.elapsedMilliseconds}ms'
+          '${res.statusCode == 200 ? '' : ' body=${AppLog.trunc(res.body)}'}',
+    );
     if (res.statusCode == 429 && retry) {
       await Future<void>.delayed(const Duration(seconds: 2));
       return _send(r, mode, retry: false);

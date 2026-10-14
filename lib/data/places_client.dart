@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
 import '../core/link_utils.dart';
+import '../core/log.dart';
 import '../core/models.dart';
 import 'config.dart';
 
@@ -19,8 +21,17 @@ class Suggestion {
 /// Places API (New): Autocomplete + Place Details sharing one session token.
 /// A session = autocomplete requests until a selection, then one Details call.
 class PlacesClient {
-  PlacesClient({http.Client? client}) : _http = client ?? http.Client();
+  PlacesClient({
+    http.Client? client,
+    http.Client Function()? resolverClient,
+    this.hopTimeout = const Duration(seconds: 10),
+    this.bodyTimeout = const Duration(seconds: 8),
+    this.deadline = const Duration(seconds: 25),
+  }) : _http = client ?? http.Client(),
+       _newResolverClient = resolverClient ?? http.Client.new;
   final http.Client _http;
+  final http.Client Function() _newResolverClient;
+  final Duration hopTimeout, bodyTimeout, deadline;
   String? _session;
 
   /// Start a new billing session (call when the picker opens).
@@ -28,6 +39,7 @@ class PlacesClient {
 
   Future<List<Suggestion>> autocomplete(String input) async {
     _session ??= _uuidV4();
+    final sw = Stopwatch()..start();
     final res = await _http
         .post(
           Uri.parse('https://places.googleapis.com/v1/places:autocomplete'),
@@ -48,7 +60,16 @@ class PlacesClient {
             },
           }),
         )
-        .timeout(const Duration(seconds: 8));
+        .timeout(const Duration(seconds: 8))
+        .catchError((Object e) {
+          AppLog.d('places', 'autocomplete "${AppLog.trunc(input, 40)}" failed ${e.runtimeType}: $e');
+          throw e;
+        });
+    AppLog.d(
+      'places',
+      'autocomplete "${AppLog.trunc(input, 40)}" → ${res.statusCode} in ${sw.elapsedMilliseconds}ms'
+          '${res.statusCode == 200 ? '' : ' body=${AppLog.trunc(res.body)}'}',
+    );
     if (res.statusCode != 200) throw ApiException.fromResponse(res.statusCode, res.body);
     final list = (jsonDecode(res.body)['suggestions'] as List?) ?? const [];
     return [
@@ -67,9 +88,19 @@ class PlacesClient {
     final uri = Uri.parse('https://places.googleapis.com/v1/places/$placeId')
         .replace(queryParameters: {'sessionToken': ?_session});
     _session = null;
+    final sw = Stopwatch()..start();
     final res = await _http
         .get(uri, headers: AppConfig.headers('id,displayName,formattedAddress,location'))
-        .timeout(const Duration(seconds: 8));
+        .timeout(const Duration(seconds: 8))
+        .catchError((Object e) {
+          AppLog.d('places', 'details $placeId failed ${e.runtimeType}: $e');
+          throw e;
+        });
+    AppLog.d(
+      'places',
+      'details $placeId → ${res.statusCode} in ${sw.elapsedMilliseconds}ms'
+          '${res.statusCode == 200 ? '' : ' body=${AppLog.trunc(res.body)}'}',
+    );
     if (res.statusCode != 200) throw ApiException.fromResponse(res.statusCode, res.body);
     final j = jsonDecode(res.body) as Map<String, dynamic>;
     final loc = j['location'] as Map<String, dynamic>;
@@ -83,24 +114,49 @@ class PlacesClient {
 
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36';
+  static const _maxHtmlBytes = 600000;
 
-  /// Follows a short link (maps.app.goo.gl / goo.gl/maps) hop by hop and stops
-  /// as soon as a URL carries coordinates. Handles consent.google.com and
-  /// intent:// redirects, and falls back to scraping the final HTML page.
+  /// Resolves a short link to coordinates. Never hangs: every hop, every body
+  /// read, and the whole flow (incl. one retry) have hard timeouts, and the
+  /// per-resolve HTTP client is closed at the end to abort open sockets.
   Future<ResolveResult> resolveShortLink(String url) async {
-    ResolveResult? last;
-    for (var attempt = 0; attempt < 2; attempt++) {
-      last = await _resolveOnce(url);
-      if (last.location != null) return last;
-      if (!last.retryable) return last;
+    final sw = Stopwatch()..start();
+    AppLog.d('link', 'resolve start ${AppLog.trunc(url)}');
+    final client = _newResolverClient();
+    try {
+      return await _resolveWithRetry(client, url).timeout(
+        deadline,
+        onTimeout: () {
+          AppLog.d('link', 'overall deadline ${deadline.inSeconds}s hit');
+          return const ResolveResult(error: 'Timed out');
+        },
+      );
+    } finally {
+      client.close(); // aborts any in-flight request/body
+      AppLog.d('link', 'resolve end after ${sw.elapsedMilliseconds}ms');
     }
-    return last!;
   }
 
-  Future<ResolveResult> _resolveOnce(String start) async {
+  Future<ResolveResult> _resolveWithRetry(http.Client client, String url) async {
+    var r = await _resolveOnce(client, url);
+    if (r.location == null && r.retryable) {
+      AppLog.d('link', 'retrying after: ${r.error}');
+      r = await _resolveOnce(client, url);
+    }
+    AppLog.d('link', r.location != null ? 'result ${r.location}' : 'failed: ${r.error}');
+    return r;
+  }
+
+  Future<ResolveResult> _resolveOnce(http.Client client, String start) async {
     var uri = Uri.parse(start);
+    final seen = <String>{};
     try {
       for (var hop = 0; hop < 8; hop++) {
+        if (!seen.add(uri.toString())) {
+          AppLog.d('link', 'redirect loop at ${AppLog.trunc(uri.toString())}');
+          return const ResolveResult(error: 'Redirect loop');
+        }
+        final sw = Stopwatch()..start();
         final req = http.Request('GET', uri)
           ..followRedirects = false
           ..headers.addAll({
@@ -108,20 +164,33 @@ class PlacesClient {
             'Accept-Language': 'en-IN,en;q=0.9',
             'Accept': 'text/html,*/*',
           });
-        final res = await _http.send(req).timeout(const Duration(seconds: 15));
+        final res = await client.send(req).timeout(hopTimeout);
         final loc = res.headers['location'];
-        if (res.isRedirect || (res.statusCode >= 300 && res.statusCode < 400 && loc != null)) {
-          await res.stream.drain<void>();
-          var next = LinkUtils.unwrapConsent(uri.resolve(loc!).toString());
-          next = LinkUtils.fromIntent(loc.toLowerCase().startsWith('intent://') ? loc : next) ?? next;
-          next = LinkUtils.unwrapConsent(next);
+        AppLog.d(
+          'link',
+          'hop $hop ${uri.host}${AppLog.trunc(uri.path, 60)} → ${res.statusCode} in ${sw.elapsedMilliseconds}ms'
+              ' len=${res.contentLength ?? '?'} loc=${AppLog.trunc(loc, 120)}',
+        );
+        if (res.statusCode >= 300 && res.statusCode < 400 && loc != null) {
+          _discard(res); // do NOT await drain: a never-ending body would hang here
+          var next = uri.resolve(loc).toString();
+          if (loc.toLowerCase().startsWith('intent://')) {
+            next = LinkUtils.fromIntent(loc) ?? next;
+            AppLog.d('link', 'branch intent → ${AppLog.trunc(next)}');
+          }
+          final unwrapped = LinkUtils.unwrapConsent(next);
+          if (unwrapped != next) AppLog.d('link', 'branch consent → ${AppLog.trunc(unwrapped)}');
+          next = unwrapped;
           final ll = LinkUtils.coordsFromUrl(next);
-          if (ll != null) return ResolveResult(location: ll, finalUrl: next);
+          if (ll != null) {
+            AppLog.d('link', 'branch redirect-coords $ll');
+            return ResolveResult(location: ll, finalUrl: next);
+          }
           uri = Uri.parse(next);
           continue;
         }
         if (res.statusCode != 200) {
-          await res.stream.drain<void>();
+          _discard(res);
           return ResolveResult(
             error: 'HTTP ${res.statusCode} from ${uri.host}',
             retryable: res.statusCode >= 500,
@@ -129,30 +198,64 @@ class PlacesClient {
         }
         final direct = LinkUtils.coordsFromUrl(uri.toString());
         if (direct != null) {
-          await res.stream.drain<void>();
+          _discard(res);
+          AppLog.d('link', 'branch url-coords $direct');
           return ResolveResult(location: direct, finalUrl: uri.toString());
         }
-        // Read up to ~1.5 MB of HTML and scrape coordinates.
-        final bytes = <int>[];
-        await for (final chunk in res.stream.timeout(const Duration(seconds: 15))) {
-          bytes.addAll(chunk);
-          if (bytes.length > 1500000) break;
-        }
-        final ll = LinkUtils.coordsFromHtml(String.fromCharCodes(bytes));
+        final html = await _readCapped(res.stream);
+        AppLog.d('link', 'branch html-scrape read ${html.length} chars');
+        final ll = LinkUtils.coordsFromHtml(html);
         return ll != null
             ? ResolveResult(location: ll, finalUrl: uri.toString())
             : ResolveResult(error: 'No coordinates on ${uri.host}${uri.path}', finalUrl: uri.toString());
       }
-      return ResolveResult(error: 'Too many redirects');
+      return const ResolveResult(error: 'Too many redirects');
     } on TimeoutException {
+      AppLog.d('link', 'TimeoutException on ${uri.host}');
       return ResolveResult(error: 'Timed out reaching ${uri.host}', retryable: true);
     } on SocketException catch (e) {
+      AppLog.d('link', 'SocketException: ${e.message} ${e.osError?.message ?? ''}');
       return ResolveResult(error: 'Network error: ${e.message}', retryable: true);
     } on http.ClientException catch (e) {
+      AppLog.d('link', 'ClientException: ${e.message}');
       return ResolveResult(error: 'Network error: ${e.message}', retryable: true);
     } catch (e) {
+      AppLog.d('link', 'Unexpected ${e.runtimeType}: $e');
       return ResolveResult(error: 'Unexpected: $e');
     }
+  }
+
+  static void _discard(http.StreamedResponse res) {
+    // Listen and cancel immediately so the socket is released without waiting.
+    res.stream.listen((_) {}, onError: (_) {}, cancelOnError: true).cancel();
+  }
+
+  /// Reads up to [_maxHtmlBytes] with a hard [bodyTimeout] for the whole body,
+  /// then cancels the subscription. Returns whatever arrived (maybe partial).
+  Future<String> _readCapped(Stream<List<int>> stream) {
+    final bytes = BytesBuilder(copy: false);
+    final done = Completer<String>();
+    late final StreamSubscription<List<int>> sub;
+    Timer? timer;
+    void finish([String why = 'eof']) {
+      if (done.isCompleted) return;
+      timer?.cancel();
+      sub.cancel();
+      AppLog.d('link', 'body stop ($why) at ${bytes.length} bytes');
+      done.complete(latin1.decode(bytes.takeBytes(), allowInvalid: true));
+    }
+
+    sub = stream.listen(
+      (chunk) {
+        bytes.add(chunk);
+        if (bytes.length >= _maxHtmlBytes) finish('cap');
+      },
+      onError: (Object e) => finish('error ${e.runtimeType}'),
+      onDone: finish,
+      cancelOnError: true,
+    );
+    timer = Timer(bodyTimeout, () => finish('timeout'));
+    return done.future;
   }
 
   static String _uuidV4() {

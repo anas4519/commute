@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../core/models.dart';
 import '../data/controller.dart';
 import 'home_screen.dart' show modeIcon;
+import 'logs_screen.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -64,6 +65,25 @@ void showSettings(BuildContext context) {
                         ),
                       ],
                     ],
+                  ),
+                ),
+                const SizedBox(height: Space.xxl),
+                const SectionLabel('Debug'),
+                Container(
+                  decoration: BoxDecoration(
+                    color: p.bg,
+                    border: Border.all(color: p.border),
+                    borderRadius: BorderRadius.circular(Space.radiusSm),
+                  ),
+                  child: ListTile(
+                    leading: const Icon(Icons.receipt_long_outlined, size: 20),
+                    title: const Text('Logs'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () {
+                      final nav = Navigator.of(context);
+                      nav.pop();
+                      nav.push(MaterialPageRoute(builder: (_) => const LogsScreen()));
+                    },
                   ),
                 ),
               ],

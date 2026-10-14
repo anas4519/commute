@@ -1,4 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+
+import 'core/log.dart';
+
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
@@ -13,6 +19,11 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   final storage = await Storage.open();
+  try {
+    final dir = await getApplicationDocumentsDirectory();
+    await AppLog.I.attach(File('${dir.path}/debug.log'));
+  } catch (_) {}
+  AppLog.d('app', 'start');
   runApp(
     MultiProvider(
       providers: [
