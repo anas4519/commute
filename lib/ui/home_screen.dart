@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../core/estimates.dart';
 import '../core/maps_link.dart';
 import '../data/ride_launcher.dart';
 
@@ -245,6 +246,14 @@ class _RouteCard extends StatelessWidget {
     final p = Palette.of(context);
     final best = c.bestFor(pair);
     final now = DateTime.now();
+    final modes = c.orderedModes;
+    final eRick = modes.contains(TravelMode.drive) && modes.contains(TravelMode.twoWheeler)
+        ? Estimates.eRickSec(
+            c.cache.get(pair.id, TravelMode.drive),
+            c.cache.get(pair.id, TravelMode.twoWheeler),
+            pair.routeKey,
+          )
+        : null;
     return Surface(
       onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => EditPairScreen(pair: pair))),
       child: Column(
@@ -321,6 +330,22 @@ class _RouteCard extends StatelessWidget {
                   ),
                 ),
               ],
+              if (eRick != null) ...[
+                const SizedBox(width: Space.sm),
+                Expanded(
+                  child: _ModeTile(
+                    onTap: () => _openMaps(context, TravelMode.twoWheeler),
+                    icon: Icons.electric_rickshaw_rounded,
+                    label: 'E\u2011rick', // non-breaking hyphen
+                    note: 'est.',
+                    result: LegResult(durationSec: eRick, fetchedAt: now, routeKey: pair.routeKey),
+                    best: false,
+                    stale: false,
+                    loading: false,
+                    routeKey: pair.routeKey,
+                  ),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: Space.md),
@@ -365,7 +390,10 @@ class _RouteCard extends StatelessWidget {
 
 class _ModeTile extends StatelessWidget {
   const _ModeTile({
-    required this.mode,
+    this.mode,
+    this.icon,
+    this.label,
+    this.note,
     required this.result,
     required this.best,
     required this.stale,
@@ -374,7 +402,12 @@ class _ModeTile extends StatelessWidget {
     required this.onTap,
   });
   final VoidCallback onTap;
-  final TravelMode mode;
+  final TravelMode? mode;
+  final IconData? icon;
+  final String? label;
+
+  /// Replaces the distance line (e.g. "est." for derived values).
+  final String? note;
   final LegResult? result;
   final bool best, stale, loading;
   final String routeKey;
@@ -389,10 +422,7 @@ class _ModeTile extends StatelessWidget {
 
     Widget value;
     if (r == null && loading) {
-      value = const Padding(
-        padding: EdgeInsets.symmetric(vertical: 5),
-        child: Shimmer(width: 44, height: 22),
-      );
+      value = const Padding(padding: EdgeInsets.symmetric(vertical: 5), child: Shimmer(width: 44, height: 22));
     } else if (r == null || !r.ok) {
       value = Text(
         'n/a',
@@ -419,7 +449,7 @@ class _ModeTile extends StatelessWidget {
       );
     }
 
-    final sub = r == null ? '' : (r.ok ? fmtDistance(r.distanceMeters) : (r.error ?? ''));
+    final sub = note ?? (r == null ? '' : (r.ok ? fmtDistance(r.distanceMeters) : (r.error ?? '')));
 
     return GestureDetector(
       onTap: onTap,
@@ -439,10 +469,19 @@ class _ModeTile extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(modeIcon(mode), size: 16, color: muted),
+                  Icon(icon ?? modeIcon(mode!), size: 16, color: muted),
                   const SizedBox(width: 6),
                   Flexible(
-                    child: Text(mode.label, maxLines: 1, style: t.labelSmall?.copyWith(color: muted)),
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        label ?? mode!.label,
+                        maxLines: 1,
+                        softWrap: false,
+                        style: t.labelSmall?.copyWith(color: muted),
+                      ),
+                    ),
                   ),
                 ],
               ),

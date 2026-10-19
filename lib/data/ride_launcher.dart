@@ -30,19 +30,22 @@ abstract final class RideLauncher {
     return _store(RideLinks.uberPackage);
   }
 
-  /// Rapido has no public deep-link API: send a geo: VIEW intent to its
-  /// package (drop location), else just open the app, else the Play Store.
+  /// Rapido: try its in-app `rapido://navigate` link (pickup + drop), then a
+  /// geo: VIEW intent (drop only), then open the app, then the Play Store.
   static Future<bool> rapido(CommutePair p) async {
     if (!Platform.isAndroid) return _store(RideLinks.rapidoPackage);
     const pkg = RideLinks.rapidoPackage;
     final geo = RideLinks.geo(p.destination);
     try {
-      final view = AndroidIntent(
-        action: 'action_view',
-        data: geo,
-        package: pkg,
-        flags: [Flag.FLAG_ACTIVITY_NEW_TASK],
-      );
+      final nav = RideLinks.rapidoNavigate(p.origin, p.destination).toString();
+      final deep = AndroidIntent(action: 'action_view', data: nav, package: pkg, flags: [Flag.FLAG_ACTIVITY_NEW_TASK]);
+      if (await deep.canResolveActivity() ?? false) {
+        await deep.launch();
+        AppLog.d('ride', 'rapido navigate deep link launched (pickup+drop): $nav');
+        return true;
+      }
+      AppLog.d('ride', 'rapido navigate deep link: no handler, trying geo');
+      final view = AndroidIntent(action: 'action_view', data: geo, package: pkg, flags: [Flag.FLAG_ACTIVITY_NEW_TASK]);
       if (await view.canResolveActivity() ?? false) {
         await view.launch();
         AppLog.d('ride', 'rapido geo intent launched: $geo');

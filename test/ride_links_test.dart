@@ -30,4 +30,12 @@ void main() {
     );
     expect(RideLinks.market('x').toString(), 'market://details?id=x');
   });
+
+  test('rapido navigate deep link carries pickup and drop', () {
+    final u = RideLinks.rapidoNavigate(home, metro);
+    expect(u.scheme, 'rapido');
+    expect(u.host, 'navigate');
+    expect(u.queryParameters, {'pickLat': '28.5677', 'pickLng': '77.2795', 'dropLat': '28.5616', 'dropLng': '77.2803'});
+    expect(u.toString(), 'rapido://navigate?pickLat=28.5677&pickLng=77.2795&dropLat=28.5616&dropLng=77.2803');
+  });
 }

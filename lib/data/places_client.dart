@@ -31,8 +31,7 @@ class PlacesClient {
     this.bodyTimeout = const Duration(seconds: 8),
     this.deadline = const Duration(seconds: 10),
   }) : _http = client ?? http.Client(),
-       _paths =
-           resolverPaths ?? (resolverClient != null ? [('test', (_) => resolverClient())] : defaultPaths);
+       _paths = resolverPaths ?? (resolverClient != null ? [('test', (_) => resolverClient())] : defaultPaths);
   final http.Client _http;
   final List<(String, FutureOr<http.Client?> Function(String host))> _paths;
 
@@ -135,6 +134,48 @@ class PlacesClient {
     );
   }
 
+  /// Nearest named place (Places Nearby Search, ranked by distance) used to
+  /// label a GPS fix. Returns null when nothing usable comes back.
+  Future<({String name, String? address})?> nearbyName(LatLng ll) async {
+    final sw = Stopwatch()..start();
+    final res = await _http
+        .post(
+          Uri.parse('https://places.googleapis.com/v1/places:searchNearby'),
+          headers: AppConfig.headers('places.displayName,places.formattedAddress'),
+          body: jsonEncode({
+            'maxResultCount': 1,
+            'rankPreference': 'DISTANCE',
+            'languageCode': 'en',
+            'locationRestriction': {
+              'circle': {
+                'center': {'latitude': ll.lat, 'longitude': ll.lng},
+                'radius': 150.0,
+              },
+            },
+          }),
+        )
+        .timeout(const Duration(seconds: 6));
+    AppLog.d(
+      'location',
+      'nearby lookup → ${res.statusCode} in ${sw.elapsedMilliseconds}ms'
+          '${res.statusCode == 200 ? '' : ' body=${AppLog.trunc(res.body)}'}',
+    );
+    if (res.statusCode != 200) return null;
+    return parseNearby(res.body);
+  }
+
+  static ({String name, String? address})? parseNearby(String body) {
+    final j = jsonDecode(body);
+    if (j is! Map) return null;
+    final places = j['places'];
+    if (places is! List || places.isEmpty || places.first is! Map) return null;
+    final p = places.first as Map;
+    final dn = p['displayName'];
+    final name = dn is Map ? dn['text'] as String? : null;
+    if (name == null || name.trim().isEmpty) return null;
+    return (name: name.trim(), address: p['formattedAddress'] as String?);
+  }
+
   static const _ua =
       'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36';
   static const _maxHtmlBytes = 600000;
@@ -201,11 +242,7 @@ class PlacesClient {
         final sw = Stopwatch()..start();
         final req = http.Request('GET', uri)
           ..followRedirects = false
-          ..headers.addAll({
-            'User-Agent': _ua,
-            'Accept-Language': 'en-IN,en;q=0.9',
-            'Accept': 'text/html,*/*',
-          });
+          ..headers.addAll({'User-Agent': _ua, 'Accept-Language': 'en-IN,en;q=0.9', 'Accept': 'text/html,*/*'});
         final res = await client.send(req).timeout(hopTimeout);
         final loc = res.headers['location'];
         AppLog.d(
@@ -233,10 +270,7 @@ class PlacesClient {
         }
         if (res.statusCode != 200) {
           _discard(res);
-          return ResolveResult(
-            error: 'HTTP ${res.statusCode} from ${uri.host}',
-            retryable: res.statusCode >= 500,
-          );
+          return ResolveResult(error: 'HTTP ${res.statusCode} from ${uri.host}', retryable: res.statusCode >= 500);
         }
         final direct = LinkUtils.coordsFromUrl(uri.toString());
         if (direct != null) {

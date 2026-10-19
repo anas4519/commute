@@ -9,6 +9,7 @@ import '../core/coord_parser.dart';
 import '../core/link_utils.dart';
 import '../core/log.dart';
 import '../core/models.dart';
+import '../data/location_service.dart';
 import '../data/places_client.dart';
 import 'web_link_resolver.dart';
 import 'theme.dart';
@@ -155,6 +156,107 @@ class _PlacePickerState extends State<PlacePicker> {
     if (mounted) Navigator.pop(context, Place(label: label, location: ll));
   }
 
+  String? _locError;
+  LocationFix _locFix = LocationFix.none;
+  bool _locating = false;
+
+  Future<void> _useCurrent() async {
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _locating = true;
+      _busy = true;
+      _locError = null;
+      _locFix = LocationFix.none;
+    });
+    try {
+      final ll = await LocationService.current();
+      var label = LocationService.fallbackLabel(ll);
+      String? address;
+      try {
+        final n = await _places.nearbyName(ll);
+        if (n != null) {
+          label = 'Near ${n.name}';
+          address = n.address;
+        }
+      } catch (e) {
+        AppLog.d('location', 'nearby lookup failed ${e.runtimeType}: $e');
+      }
+      AppLog.d('location', 'using ${ll.key} as "$label"');
+      if (mounted) Navigator.pop(context, Place(label: label, location: ll, address: address));
+    } on LocationFailure catch (e) {
+      AppLog.d('location', 'failure: ${e.message}');
+      if (mounted) {
+        setState(() {
+          _locError = e.message;
+          _locFix = e.fix;
+        });
+      }
+    } catch (e) {
+      AppLog.d('location', 'unexpected ${e.runtimeType}: $e');
+      if (mounted) setState(() => _locError = "Couldn't get your location.");
+    } finally {
+      if (mounted) {
+        setState(() {
+          _locating = false;
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  Widget _currentLocation(TextTheme t, Palette p) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Material(
+          color: p.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(Space.radius),
+            side: BorderSide(color: p.border),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: _busy ? null : _useCurrent,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: Space.lg, vertical: Space.md),
+              child: Row(
+                children: [
+                  Icon(Icons.my_location_rounded, size: 20, color: p.accent),
+                  const SizedBox(width: Space.md),
+                  Expanded(
+                    child: Text(_locating ? 'Finding your location…' : 'Use current location', style: t.bodyLarge),
+                  ),
+                  if (_locating)
+                    SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 1.6, color: p.textMuted),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        if (_locError != null)
+          Padding(
+            padding: const EdgeInsets.only(top: Space.sm, left: Space.xs),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(_locError!, style: t.bodySmall?.copyWith(color: p.danger)),
+                ),
+                if (_locFix != LocationFix.none)
+                  TextButton(
+                    onPressed: () => LocationService.openFix(_locFix),
+                    child: Text(_locFix == LocationFix.appSettings ? 'App settings' : 'Turn on'),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
   int _tab = 0;
 
   @override
@@ -226,10 +328,7 @@ class _PlacePickerState extends State<PlacePicker> {
         minLines: 2,
         maxLines: 4,
         style: t.bodyLarge,
-        decoration: InputDecoration(
-          hintText: '28.6139, 77.2090\nor a Google Maps link',
-          errorText: _pasteError,
-        ),
+        decoration: InputDecoration(hintText: '28.6139, 77.2090\nor a Google Maps link', errorText: _pasteError),
       ),
       const SizedBox(height: Space.md),
       TextField(
@@ -255,8 +354,9 @@ class _PlacePickerState extends State<PlacePicker> {
                   child: Opacity(opacity: 0.01, child: WebViewWidget(controller: _web!.controller)),
                 ),
               ),
+            Padding(padding: const EdgeInsets.fromLTRB(Space.xl, Space.md, Space.xl, 0), child: _currentLocation(t, p)),
             Padding(
-              padding: const EdgeInsets.fromLTRB(Space.xl, Space.md, Space.xl, Space.xl),
+              padding: const EdgeInsets.fromLTRB(Space.xl, Space.lg, Space.xl, Space.xl),
               child: SizedBox(
                 width: double.infinity,
                 child: SegmentedButton<int>(
