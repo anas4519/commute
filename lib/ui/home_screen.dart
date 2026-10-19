@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../core/maps_link.dart';
+import '../data/ride_launcher.dart';
 
 import '../core/models.dart';
 import '../data/controller.dart';
@@ -322,9 +323,31 @@ class _RouteCard extends StatelessWidget {
               ],
             ],
           ),
+          const SizedBox(height: Space.md),
+          Row(
+            children: [
+              _RideChip(
+                label: 'Uber',
+                icon: Icons.local_taxi_outlined,
+                onTap: () => _ride(context, 'Uber', RideLauncher.uber),
+              ),
+              const SizedBox(width: Space.sm),
+              _RideChip(
+                label: 'Rapido',
+                icon: Icons.two_wheeler_rounded,
+                onTap: () => _ride(context, 'Rapido', RideLauncher.rapido),
+              ),
+            ],
+          ),
         ],
       ),
     );
+  }
+
+  Future<void> _ride(BuildContext context, String name, Future<bool> Function(CommutePair) launch) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await launch(pair);
+    if (!ok) messenger.showSnackBar(SnackBar(content: Text("Couldn't open $name")));
   }
 
   Future<void> _openMaps(BuildContext context, TravelMode? mode) async {
@@ -433,6 +456,41 @@ class _ModeTile extends StatelessWidget {
                 style: t.labelSmall?.copyWith(color: muted),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RideChip extends StatelessWidget {
+  const _RideChip({required this.label, required this.icon, required this.onTap});
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = Palette.of(context);
+    final t = Theme.of(context).textTheme;
+    return Material(
+      color: Colors.transparent,
+      shape: StadiumBorder(side: BorderSide(color: p.border)),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 36),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: Space.md, vertical: Space.sm),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 16, color: p.textMuted),
+                const SizedBox(width: 6),
+                Text(label, style: t.labelMedium?.copyWith(color: p.text)),
+              ],
+            ),
           ),
         ),
       ),
